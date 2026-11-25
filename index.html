@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#03070c">
+<title>Merry Christmas · 圣诞树</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%;background:#03070c;overflow:hidden}
+  body{
+    font-family:"Helvetica Neue","PingFang SC","Microsoft YaHei",sans-serif;
+    -webkit-tap-highlight-color:transparent;
+  }
+  #scene{display:block;width:100vw;height:100vh}
+  .ui{
+    position:fixed;inset:0;pointer-events:none;
+    display:flex;flex-direction:column;justify-content:space-between;
+    align-items:center;padding:4.2vh 6vw 4vh;
+  }
+  .top{text-align:center;opacity:0;animation:fade 1.6s .9s ease forwards}
+  .title{
+    font-size:clamp(26px,6.2vw,64px);
+    font-weight:200;letter-spacing:.22em;
+    background:linear-gradient(180deg,#fff7e2 0%,#ffd98a 42%,#e8b45c 72%,#a97c34 100%);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+    filter:drop-shadow(0 0 24px rgba(255,196,96,.45));
+  }
+  .sub{
+    margin-top:14px;font-size:clamp(11px,2.2vw,15px);
+    letter-spacing:.42em;color:rgba(226,238,255,.55);text-transform:uppercase;
+  }
+  .bottom{text-align:center;opacity:0;animation:fade 1.8s 1.5s ease forwards}
+  .wish{
+    font-size:clamp(13px,2.8vw,18px);letter-spacing:.16em;
+    color:rgba(232,242,255,.72);
+  }
+  .hint{
+    margin-top:16px;font-size:11px;letter-spacing:.24em;
+    color:rgba(190,212,240,.34);
+  }
+  @keyframes fade{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+  @media (max-width:480px){ .ui{padding:5vh 5vw 4vh} .title{letter-spacing:.14em} }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<div class="ui">
+  <div class="top">
+    <div class="title">MERRY CHRISTMAS</div>
+    <div class="sub">2026 · 平安喜乐</div>
+  </div>
+  <div class="bottom">
+    <div class="wish">愿 你 被 温 暖 环 绕</div>
+    <div class="hint">拖动屏幕 转动圣诞树</div>
+  </div>
+</div>
+<script>
+(function () {
+  "use strict";
+
+  var cv = document.getElementById("scene");
+  var ctx = cv.getContext("2d");
+  var W = 0, H = 0, DPR = 1;
+
+  var CX = 0, BASE = 0;          // 投影原点（树底中心）
+  var R = 0, TH = 0;             // 树半径 / 树高
+  var tree = [], lights = [], baubles = [], snow = [], bokeh = [];
+
+  var rot = 0, dragRot = 0, autoSpin = 1, dragging = false, lastX = 0, camZ = 0;
+  var CAM_F = 1000;
+  var tilt = -0.10;
+  var t0 = performance.now();
+
+  /* ---------- 光斑贴图 ---------- */
+  var cache = {};
+  function glow(h, s, l) {
+    var key = h + "|" + s + "|" + l;
+    if (cache[key]) return cache[key];
+    var size = 64, c = document.createElement("canvas");
+    c.width = c.height = size;
+    var g = c.getContext("2d"), m = size / 2;
+    var grd = g.createRadialGradient(m, m, 0, m, m, m);
+    grd.addColorStop(0.0, "hsla(" + h + "," + s + "%," + Math.min(l + 30, 100) + "%,1)");
+    grd.addColorStop(0.16, "hsla(" + h + "," + s + "%," + l + "%,.92)");
+    grd.addColorStop(0.42, "hsla(" + h + "," + s + "%," + l + "%,.30)");
+    grd.addColorStop(1.0, "hsla(" + h + "," + s + "%," + l + "%,0)");
+    g.fillStyle = grd;
+    g.fillRect(0, 0, size, size);
+    cache[key] = c;
+    return c;
+  }
+
+  /* ---------- 场景构建 ---------- */
+  var bgGrad = null, halo = null;
+
+  function build() {
+    BASE = H * 0.835;
+    TH = H * 0.475;
+    R = Math.min(TH / 2.75, W * 0.36);
+    CX = W / 2;
+    camZ = R * 5.6;
+
+    bgGrad = ctx.createLinearGradient(0, 0, 0, H);
+    bgGrad.addColorStop(0, "#050d14");
+    bgGrad.addColorStop(0.45, "#04101a");
+    bgGrad.addColorStop(0.78, "#031018");
+    bgGrad.addColorStop(1, "#02080c");
+  }
+
+  function buildTree() {
+    tree = []; lights = []; baubles = []; bokeh = []; snow = [];
+
+    var N = W < 620 ? 900 : 1300;
+    var turns = 6;
+
+    /* 螺旋主体：从底部盘旋到顶部，构成锥形轮廓 */
+    for (var i = 0; i < N; i++) {
+      var t = i / (N - 1);                 // 0 底部 → 1 顶部
+      var rad = R * Math.pow(1 - t, 1.18);
+      var ang = t * turns * Math.PI * 2 + (Math.random() - 0.5) * 0.3;
+      var rr = rad * (0.55 + Math.random() * 0.55);
+      tree.push({
+        x: Math.cos(ang) * rr,
+        y: -t * TH + (Math.random() - 0.5) * 9,
+        z: Math.sin(ang) * rr,
+        sz: 2.6 + Math.random() * 3.4 + (Math.random() < 0.05 ? 3.5 : 0),
+        h: 142 + Math.random() * 22,
+        s: 62 + Math.random() * 26,
+        l: 34 + Math.random() * 22,
+        ph: Math.random() * 6.283,
+        tw: 0.15 + Math.random() * 0.5
+      });
+    }
+
+    /* 分层枝叶：每一层的边缘更亮，形成经典的层叠枞树轮廓 */
+    var TIERS = 10;
+    for (var tier = 0; tier < TIERS; tier++) {
+      var v = ((tier + 1) / TIERS) * 0.97;          // 由下往上
+      var ty = -v * TH;
+      var trad = R * Math.pow(1 - v, 1.06) * 1.06;
+      var ringN = Math.round((W < 620 ? 46 : 68) * (1 - v * 0.5));
+      for (var r = 0; r < ringN; r++) {
+        var a = Math.random() * Math.PI * 2;
+        var depth = Math.random() < 0.55 ? 0.94 + Math.random() * 0.1 : Math.random() * 0.95;
+        tree.push({
+          x: Math.cos(a) * trad * depth,
+          y: ty + (Math.random() - 0.5) * TH * 0.035,
+          z: Math.sin(a) * trad * depth,
+          sz: 2.4 + Math.random() * 3.2,
+          h: 144 + Math.random() * 18,
+          s: 60 + Math.random() * 24,
+          l: 36 + Math.random() * 20,
+          ph: Math.random() * 6.283,
+          tw: 0.15 + Math.random() * 0.5
+        });
+      }
+      /* 层与层之间的填充，避免中间空掉 */
+      for (var f2 = 0; f2 < Math.round(ringN * 0.5); f2++) {
+        var a2 = Math.random() * Math.PI * 2;
+        var dr = Math.sqrt(Math.random()) * trad * 0.85;
+        tree.push({
+          x: Math.cos(a2) * dr,
+          y: ty + TH * 0.02 + (Math.random() - 0.5) * TH * 0.045,
+          z: Math.sin(a2) * dr,
+          sz: 2 + Math.random() * 2.8,
+          h: 146 + Math.random() * 16,
+          s: 52 + Math.random() * 22,
+          l: 28 + Math.random() * 16,
+          ph: Math.random() * 6.283,
+          tw: 0.15 + Math.random() * 0.5
+        });
+      }
+    }
+
+    /* 缠绕的彩灯 */
+    var LN = W < 620 ? 210 : 320;
+    var palette = [
+      [44, 100, 62],   // 暖金
+      [3, 90, 58],     // 红
+      [186, 92, 64],   // 冰蓝
+      [330, 82, 62],   // 粉
+      [52, 8, 92]      // 白
+    ];
+    for (var k = 0; k < LN; k++) {
+      var u = Math.pow(k / LN, 1.28);
+      var hh = 0.03 + u * 0.945;
+      var r2 = R * Math.pow(1 - hh, 1.18) * 1.0;
+      var a2 = u * 5.4 * Math.PI * 2;
+      var col = palette[(k * 5 + Math.floor(u * 9)) % palette.length];
+      lights.push({
+        x: Math.cos(a2) * r2, y: -hh * TH, z: Math.sin(a2) * r2,
+        h: col[0], s: col[1], l: col[2],
+        sz: 5 + Math.random() * 5,
+        ph: Math.random() * 6.283,
+        sp: 0.9 + Math.random() * 1.6
+      });
+    }
+
+    /* 挂饰球 */
+    var BN = W < 620 ? 22 : 34;
+    for (var b = 0; b < BN; b++) {
+      var hb = 0.06 + Math.random() * 0.82;
+      var rb = R * Math.pow(1 - hb, 1.22) * 0.96;
+      var ab = Math.random() * Math.PI * 2;
+      var cb = Math.random() < 0.5 ? [358, 76, 44] : [44, 92, 52];
+      baubles.push({
+        x: Math.cos(ab) * rb, y: -hb * TH, z: Math.sin(ab) * rb,
+        h: cb[0], s: cb[1], l: cb[2],
+        sz: 9 + Math.random() * 7, ph: Math.random() * 6.283
+      });
+    }
+
+    /* 背景微光 */
+    var KN = W < 620 ? 26 : 46;
+    for (var n = 0; n < KN; n++) {
+      bokeh.push({
+        x: Math.random() * W, y: Math.random() * H * 0.92,
+        sz: 6 + Math.random() * 40,
+        h: [198, 210, 44, 330][Math.floor(Math.random() * 4)],
+        s: 60 + Math.random() * 30,
+        l: 30 + Math.random() * 22,
+        a: 0.03 + Math.random() * 0.09,
+        ph: Math.random() * 6.283,
+        sp: 0.3 + Math.random() * 0.8
+      });
+    }
+
+    /* 飘雪 */
+    var SN = Math.round(Math.min(W * H / 16000, 220));
+    for (var f = 0; f < SN; f++) snow.push(newFlake(true));
+  }
+
+  function newFlake(anywhere) {
+    return {
+      x: Math.random() * W,
+      y: anywhere ? Math.random() * H : -20,
+      r: 0.7 + Math.random() * 2.3,
+      vy: 0.35 + Math.random() * 1.5,
+      vx: (Math.random() - 0.5) * 0.5,
+      a: 0.25 + Math.random() * 0.6,
+      ph: Math.random() * 6.283,
+      sw: 0.4 + Math.random() * 1.4
+    };
+  }
+
+  /* ---------- 投影 ---------- */
+  var P = { x: 0, y: 0, s: 1, z: 0 };
+  function project(px, py, pz, cr, sr, ct, st) {
+    var x = px * cr - pz * sr;
+    var z = px * sr + pz * cr;
+    var y2 = py * ct - z * st;
+    var z2 = py * st + z * ct;
+    var s = CAM_F / (camZ + z2);
+    P.x = CX + x * s;
+    P.y = BASE + y2 * s;
+    P.s = s;
+    P.z = z2;
+    return P;
+  }
+
+  /* ---------- 排序绘制列表 ---------- */
+  var drawList = [];
+
+  function render(now) {
+    var t = (now - t0) / 1000;
+
+    ctx.globalCompositeOperation = "source-over";
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(0, 0, W, H);
+
+    /* 背景光晕 */
+    ctx.globalCompositeOperation = "lighter";
+    for (var i = 0; i < bokeh.length; i++) {
+      var b = bokeh[i];
+      var tw = 0.6 + 0.4 * Math.sin(t * b.sp + b.ph);
+      var spr = glow(b.h, b.s, b.l);
+      var size = b.sz * 2;
+      ctx.globalAlpha = b.a * tw;
+      ctx.drawImage(spr, b.x - size / 2, b.y - size / 2, size, size);
+    }
+    ctx.globalAlpha = 1;
+
+    /* 树后地面光 */
+    var gs = R * 8;
+    var groundY = BASE + R * 0.42;
+    ctx.globalAlpha = 0.10 + 0.02 * Math.sin(t * 1.1);
+    ctx.drawImage(glow(38, 90, 55), CX - gs / 2, groundY - gs * 0.35, gs, gs * 0.9);
+    ctx.globalAlpha = 1;
+
+    var cr = Math.cos(rot), sr = Math.sin(rot);
+    var ct = Math.cos(tilt), st = Math.sin(tilt);
+
+    drawList.length = 0;
+
+    for (var j = 0; j < tree.length; j++) {
+      var p = tree[j];
+      project(p.x, p.y, p.z, cr, sr, ct, st);
+      drawList.push({ x: P.x, y: P.y, z: P.z, s: P.s, sz: p.sz, h: p.h, s2: p.s, l: p.l, a: 0.8, kind: 0, ph: p.ph, tw: p.tw });
+    }
+    for (var j2 = 0; j2 < lights.length; j2++) {
+      var q = lights[j2];
+      project(q.x, q.y, q.z, cr, sr, ct, st);
+      drawList.push({ x: P.x, y: P.y, z: P.z, s: P.s, sz: q.sz, h: q.h, s2: q.s, l: q.l, a: 0.95, kind: 1, ph: q.ph, tw: 0.6 });
+    }
+    for (var j3 = 0; j3 < baubles.length; j3++) {
+      var o = baubles[j3];
+      project(o.x, o.y, o.z, cr, sr, ct, st);
+      drawList.push({ x: P.x, y: P.y, z: P.z, s: P.s, sz: o.sz, h: o.h, s2: o.s, l: o.l, a: 1, kind: 2, ph: o.ph, tw: 0.3 });
+    }
+
+    drawList.sort(function (a, b) { return b.z - a.z; });
+
+    ctx.globalCompositeOperation = "lighter";
+    for (var m = 0; m < drawList.length; m++) {
+      var d = drawList[m];
+      var twinkle = 1;
+      if (d.kind === 1) twinkle = 0.55 + 0.45 * Math.sin(t * (1.6 + d.tw * 3) + d.ph);
+      else if (d.kind === 0) twinkle = 0.7 + 0.3 * Math.sin(t * (0.4 + d.tw) + d.ph);
+      else twinkle = 0.85 + 0.15 * Math.sin(t * 0.9 + d.ph);
+
+      var sc = d.sz * d.s * (0.9 + 0.1 * d.s);
+      var img = glow(d.h, d.s2, d.l);
+      ctx.globalAlpha = Math.min(1, d.a * twinkle * (0.35 + 0.65 * Math.min(1.4, d.s)));
+      ctx.drawImage(img, d.x - sc, d.y - sc, sc * 2, sc * 2);
+    }
+    ctx.globalAlpha = 1;
+
+    /* 顶端星 */
+    drawStar(t, cr, sr, ct, st);
+
+    /* 雪 */
+    drawSnow(t, now);
+
+    /* 暗角 */
+    ctx.globalCompositeOperation = "source-over";
+    if (vignette) {
+      ctx.globalAlpha = 1;
+      ctx.drawImage(vignette, 0, 0, W, H);
+    }
+  }
+
+  function drawStar(t, cr, sr, ct, st) {
+    project(0, -TH - 6, 0, cr, sr, ct, st);
+    var sx = P.x, sy = P.y, ss = P.s;
+    var pulse = 0.85 + 0.15 * Math.sin(t * 2.2);
+    var big = R * 1.25 * ss * pulse;
+
+    ctx.globalCompositeOperation = "lighter";
+    ctx.globalAlpha = 0.5;
+    ctx.drawImage(glow(44, 100, 68), sx - big / 2, sy - big / 2, big, big);
+    ctx.globalAlpha = 0.95;
+    var small = R * 0.5 * ss;
+    ctx.drawImage(glow(50, 100, 92), sx - small / 2, sy - small / 2, small, small);
+
+    /* 星芒 */
+    var rays = 8, len = R * 0.62 * ss * pulse;
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.rotate(t * 0.25);
+    for (var r = 0; r < rays; r++) {
+      var ang = (r / rays) * Math.PI * 2;
+      var l = r % 2 === 0 ? len : len * 0.55;
+      var g2 = ctx.createLinearGradient(0, 0, Math.cos(ang) * l, Math.sin(ang) * l);
+      g2.addColorStop(0, "rgba(255,244,206,.85)");
+      g2.addColorStop(1, "rgba(255,214,138,0)");
+      ctx.strokeStyle = g2;
+      ctx.lineWidth = (r % 2 === 0 ? 2.2 : 1.4) * ss;
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(Math.cos(ang) * l, Math.sin(ang) * l);
+      ctx.stroke();
+    }
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+
+  function drawSnow(t) {
+    ctx.globalCompositeOperation = "lighter";
+    for (var i = 0; i < snow.length; i++) {
+      var f = snow[i];
+      f.y += f.vy;
+      f.x += f.vx + Math.sin(t * f.sw + f.ph) * 0.8;
+      if (f.y > H + 10) { snow[i] = newFlake(false); continue; }
+      if (f.x < -10) f.x = W + 10;
+      if (f.x > W + 10) f.x = -10;
+      ctx.globalAlpha = f.a * (0.7 + 0.3 * Math.sin(t * 1.4 + f.ph));
+      var spr = glow(200, 20, 96);
+      var size = f.r * 4.5;
+      ctx.drawImage(spr, f.x - size / 2, f.y - size / 2, size, size);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  var vignette = null;
+  function makeVignette() {
+    var c = document.createElement("canvas");
+    c.width = Math.max(2, Math.round(W / 4));
+    c.height = Math.max(2, Math.round(H / 4));
+    var g = c.getContext("2d");
+    var grd = g.createRadialGradient(c.width / 2, c.height * 0.55, c.height * 0.12, c.width / 2, c.height * 0.55, c.height * 0.78);
+    grd.addColorStop(0, "rgba(0,0,0,0)");
+    grd.addColorStop(0.62, "rgba(0,0,0,0.16)");
+    grd.addColorStop(1, "rgba(0,0,0,0.62)");
+    g.fillStyle = grd;
+    g.fillRect(0, 0, c.width, c.height);
+    vignette = c;
+  }
+
+  /* ---------- 主循环 ---------- */
+  var raf = 0;
+  function loop(now) {
+    if (!dragging) {
+      autoSpin += (1 - autoSpin) * 0.03;
+      rot += 0.00042 * autoSpin;
+    } else {
+      autoSpin *= 0.9;
+    }
+    rot += dragRot;
+    dragRot *= 0.92;
+    render(now);
+    raf = requestAnimationFrame(loop);
+  }
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = Math.max(320, cv.clientWidth || window.innerWidth);
+    H = Math.max(480, cv.clientHeight || window.innerHeight);
+    cv.width = Math.round(W * DPR);
+    cv.height = Math.round(H * DPR);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    build();
+    buildTree();
+    makeVignette();
+  }
+
+  /* ---------- 交互 ---------- */
+  function pointerDown(e) {
+    dragging = true;
+    lastX = (e.touches ? e.touches[0].clientX : e.clientX);
+  }
+  function pointerMove(e) {
+    if (!dragging) return;
+    var x = (e.touches ? e.touches[0].clientX : e.clientX);
+    var dx = x - lastX;
+    lastX = x;
+    dragRot = dx * 0.0016;
+    rot += dragRot;
+    if (e.cancelable) e.preventDefault();
+  }
+  function pointerUp() { dragging = false; }
+
+  window.addEventListener("resize", function () { clearTimeout(resize._t); resize._t = setTimeout(resize, 120); });
+  cv.addEventListener("mousedown", pointerDown);
+  window.addEventListener("mousemove", pointerMove);
+  window.addEventListener("mouseup", pointerUp);
+  cv.addEventListener("touchstart", pointerDown, { passive: true });
+  cv.addEventListener("touchmove", pointerMove, { passive: false });
+  window.addEventListener("touchend", pointerUp);
+
+  resize();
+  raf = requestAnimationFrame(loop);
+
+  /* 页面隐藏时暂停，省电 */
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) { cancelAnimationFrame(raf); }
+    else { raf = requestAnimationFrame(loop); }
+  });
+})();
+</script>
+</body>
+</html>
